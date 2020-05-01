@@ -25,7 +25,7 @@ import ast
 
 from sqlalchemy import create_engine
 from sqlalchemy import Table, Column, ForeignKey
-from sqlalchemy import String, Integer, Boolean, TIMESTAMP, Float
+from sqlalchemy import String, Integer, Boolean, TIMESTAMP, Float, DateTime
 from sqlalchemy.orm import relationship, sessionmaker, scoped_session
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -418,7 +418,7 @@ def dispose():
         except: pass
         if old_session.bind:
             try: old_session.bind.dispose()
-            except: pass
+            except Exception: pass
 
     for attr in list(Books.__dict__.keys()):
         if attr.startswith("custom_column_"):

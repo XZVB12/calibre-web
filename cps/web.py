@@ -23,7 +23,7 @@
 from __future__ import division, print_function, unicode_literals
 import os
 import base64
-import datetime
+from datetime import datetime
 import json
 import mimetypes
 import traceback
@@ -38,18 +38,22 @@ from flask import render_template, request, redirect, send_from_directory, make_
 from flask_babel import gettext as _
 from flask_login import login_user, logout_user, login_required, current_user
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.sql.expression import text, func, true, false, not_, and_, exists, or_
+from sqlalchemy.sql.expression import text, func, true, false, not_, and_, or_
 from werkzeug.exceptions import default_exceptions
+try:
+    from werkzeug.exceptions import FailedDependency
+except ImportError:
+    from werkzeug.exceptions import UnprocessableEntity as FailedDependency
 from werkzeug.datastructures import Headers
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from . import constants, logger, isoLanguages, services, worker
 from . import searched_ids, lm, babel, db, ub, config, get_locale, app
 from .gdriveutils import getFileFromEbooksFolder, do_gdrive_download
-from .helper import common_filters, get_search_results, fill_indexpage, speaking_language, check_valid_domain, \
-    order_authors, get_typeahead, render_task_status, json_serial, get_cc_columns, \
-    get_book_cover, get_download_link, send_mail, generate_random_password, send_registration_mail, \
-    check_send_to_kindle, check_read_formats, lcase, tags_filters, reset_password
+from .helper import common_filters, get_search_results, fill_indexpage, fill_indexpage_with_archived_books, \
+    speaking_language, check_valid_domain, order_authors, get_typeahead, render_task_status, json_serial, \
+    get_cc_columns, get_book_cover, get_download_link, send_mail, generate_random_password, \
+    send_registration_mail, check_send_to_kindle, check_read_formats, lcase, tags_filters, reset_password
 from .pagination import Pagination
 from .redirect import redirect_back
 
@@ -72,11 +76,11 @@ try:
 except ImportError:
     pass  # We're not using Python 3
 
-# try:
-#     import rarfile
-#     feature_support['rar'] = True
-# except ImportError:
-#     feature_support['rar'] = False
+#try:
+#    import rarfile
+#    feature_support['rar'] = True
+#except ImportError:
+#    feature_support['rar'] = False
 
 try:
     from natsort import natsorted as sort
@@ -110,6 +114,15 @@ for ex in default_exceptions:
         app.register_error_handler(ex, error_http)
     elif ex == 500:
         app.register_error_handler(ex, internal_error)
+
+
+if feature_support['ldap']:
+    # Only way of catching the LDAPException upon logging in with LDAP server down
+    @app.errorhandler(services.ldap.LDAPException)
+    def handle_exception(e):
+        log.debug('LDAP server not accessible while trying to login to opds feed')
+        return error_http(FailedDependency())
+
 
 web = Blueprint('web', __name__)
 log = logger.create()
@@ -156,7 +169,7 @@ def load_user_from_auth_header(header_val):
     except (TypeError, UnicodeDecodeError, binascii.Error):
         pass
     user = _fetch_user_by_name(basic_username)
-    if config.config_login_type == constants.LOGIN_LDAP and services.ldap:
+    if user and config.config_login_type == constants.LOGIN_LDAP and services.ldap:
         if services.ldap.bind_user(str(user.password), basic_password):
             return user
     if user and check_password_hash(str(user.password), basic_password):
@@ -392,13 +405,19 @@ def toggle_read(book_id):
         book = ub.session.query(ub.ReadBook).filter(and_(ub.ReadBook.user_id == int(current_user.id),
                                                          ub.ReadBook.book_id == book_id)).first()
         if book:
-            book.is_read = not book.is_read
+            if book.read_status == ub.ReadBook.STATUS_FINISHED:
+                book.read_status = ub.ReadBook.STATUS_UNREAD
+            else:
+                book.read_status = ub.ReadBook.STATUS_FINISHED
         else:
-            readBook = ub.ReadBook()
-            readBook.user_id = int(current_user.id)
-            readBook.book_id = book_id
-            readBook.is_read = True
+            readBook = ub.ReadBook(user_id=current_user.id, book_id = book_id)
+            readBook.read_status = ub.ReadBook.STATUS_FINISHED
             book = readBook
+        if not book.kobo_reading_state:
+            kobo_reading_state = ub.KoboReadingState(user_id=current_user.id, book_id=book_id)
+            kobo_reading_state.current_bookmark = ub.KoboBookmark()
+            kobo_reading_state.statistics = ub.KoboStatistics()
+            book.kobo_reading_state = kobo_reading_state
         ub.session.merge(book)
         ub.session.commit()
     else:
@@ -416,6 +435,22 @@ def toggle_read(book_id):
                 db.session.commit()
         except KeyError:
             log.error(u"Custom Column No.%d is not exisiting in calibre database", config.config_read_column)
+    return ""
+
+
+@web.route("/ajax/togglearchived/<int:book_id>", methods=['POST'])
+@login_required
+def toggle_archived(book_id):
+    archived_book = ub.session.query(ub.ArchivedBook).filter(and_(ub.ArchivedBook.user_id == int(current_user.id),
+                                                                  ub.ArchivedBook.book_id == book_id)).first()
+    if archived_book:
+        archived_book.is_archived = not archived_book.is_archived
+        archived_book.last_modified = datetime.utcnow()
+    else:
+        archived_book = ub.ArchivedBook(user_id=current_user.id, book_id=book_id)
+        archived_book.is_archived = True
+    ub.session.merge(archived_book)
+    ub.session.commit()
     return ""
 
 
@@ -608,6 +643,8 @@ def books_list(data, sort, book_id, page):
         return render_category_books(page, book_id, order)
     elif data == "language":
         return render_language_books(page, book_id, order)
+    elif data == "archived":
+        return render_archived_books(page, order)
     else:
         entries, random, pagination = fill_indexpage(page, db.Books, True, order)
         return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
@@ -717,7 +754,7 @@ def render_category_books(page, book_id, order):
     name = db.session.query(db.Tags).filter(db.Tags.id == book_id).first()
     if name:
         entries, random, pagination = fill_indexpage(page, db.Books, db.Books.tags.any(db.Tags.id == book_id),
-                                                     [db.Series.name, db.Books.series_index, order[0]],
+                                                     [order[0], db.Series.name, db.Books.series_index],
                                                      db.books_series_link, db.Series)
         return render_title_template('index.html', random=random, entries=entries, pagination=pagination, id=book_id,
                                      title=_(u"Category: %(name)s", name=name.name), page="category")
@@ -893,9 +930,17 @@ def search():
         for element in entries:
             ids.append(element.id)
         searched_ids[current_user.id] = ids
-        return render_title_template('search.html', searchterm=term, entries=entries, title=_(u"Search"), page="search")
+        return render_title_template('search.html',
+                                     searchterm=term,
+                                     adv_searchterm=term,
+                                     entries=entries,
+                                     title=_(u"Search"),
+                                     page="search")
     else:
-        return render_title_template('search.html', searchterm="", title=_(u"Search"), page="search")
+        return render_title_template('search.html',
+                                     searchterm="",
+                                     title=_(u"Search"),
+                                     page="search")
 
 
 @web.route("/advanced_search", methods=['GET'])
@@ -904,7 +949,7 @@ def advanced_search():
     # Build custom columns names
     cc = get_cc_columns()
     db.session.connection().connection.connection.create_function("lower", 1, lcase)
-    q = db.session.query(db.Books).filter(common_filters())
+    q = db.session.query(db.Books).filter(common_filters()).order_by(db.Books.sort)
 
     include_tag_inputs = request.args.getlist('include_tag')
     exclude_tag_inputs = request.args.getlist('exclude_tag')
@@ -946,14 +991,14 @@ def advanced_search():
         if pub_start:
             try:
                 searchterm.extend([_(u"Published after ") +
-                                   format_date(datetime.datetime.strptime(pub_start, "%Y-%m-%d"),
+                                   format_date(datetime.strptime(pub_start, "%Y-%m-%d"),
                                                format='medium', locale=get_locale())])
             except ValueError:
                 pub_start = u""
         if pub_end:
             try:
                 searchterm.extend([_(u"Published before ") +
-                                   format_date(datetime.datetime.strptime(pub_end, "%Y-%m-%d"),
+                                   format_date(datetime.strptime(pub_end, "%Y-%m-%d"),
                                                format='medium', locale=get_locale())])
             except ValueError:
                 pub_start = u""
@@ -1033,7 +1078,7 @@ def advanced_search():
         for element in q:
             ids.append(element.id)
         searched_ids[current_user.id] = ids
-        return render_title_template('search.html', searchterm=searchterm,
+        return render_title_template('search.html', adv_searchterm=searchterm,
                                      entries=q, title=_(u"search"), page="search")
     # prepare data for search-form
     tags = db.session.query(db.Tags).join(db.books_tags_link).join(db.Books).filter(common_filters()) \
@@ -1054,8 +1099,8 @@ def advanced_search():
 def render_read_books(page, are_read, as_xml=False, order=None, *args, **kwargs):
     order = order or []
     if not config.config_read_column:
-        readBooks = ub.session.query(ub.ReadBook).filter(ub.ReadBook.user_id == int(current_user.id)) \
-            .filter(ub.ReadBook.is_read == True).all()
+        readBooks = ub.session.query(ub.ReadBook).filter(ub.ReadBook.user_id == int(current_user.id))\
+            .filter(ub.ReadBook.read_status == ub.ReadBook.STATUS_FINISHED).all()
         readBookIds = [x.book_id for x in readBooks]
     else:
         try:
@@ -1086,6 +1131,26 @@ def render_read_books(page, are_read, as_xml=False, order=None, *args, **kwargs)
         return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
                                      title=name, page=pagename)
 
+
+def render_archived_books(page, order):
+    order = order or []
+    archived_books = (
+        ub.session.query(ub.ArchivedBook)
+        .filter(ub.ArchivedBook.user_id == int(current_user.id))
+        .filter(ub.ArchivedBook.is_archived == True)
+        .all()
+    )
+    archived_book_ids = [archived_book.book_id for archived_book in archived_books]
+
+    archived_filter = db.Books.id.in_(archived_book_ids)
+
+    entries, random, pagination = fill_indexpage_with_archived_books(page, db.Books, archived_filter, order,
+                                                                     allow_show_archived=True)
+
+    name = _(u'Archived Books') + ' (' + str(len(archived_book_ids)) + ')'
+    pagename = "archived"
+    return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
+                                 title=name, page=pagename)
 
 # ################################### Download/Send ##################################################################
 
@@ -1266,16 +1331,11 @@ def login():
                     log.info('Login failed for user "%s" IP-adress: %s', form['username'], ipAdress)
                     flash(_(u"Wrong Username or Password"), category="error")
 
-    if feature_support['oauth']:
-        oauth_status = get_oauth_status()
-    else:
-        oauth_status = None
     next_url = url_for('web.index')
     return render_title_template('login.html',
                                  title=_(u"login"),
                                  next_url=next_url,
                                  config=config,
-                                 # oauth_status=oauth_status,
                                  oauth_check=oauth_check,
                                  mail=config.get_mail_server_configured(), page="login")
 
@@ -1317,7 +1377,7 @@ def verify_token(token):
         return redirect(url_for('web.index'))
 
     # Token expired
-    if datetime.datetime.now() > auth_token.expiration:
+    if datetime.now() > auth_token.expiration:
         ub.session.delete(auth_token)
         ub.session.commit()
 
@@ -1349,7 +1409,7 @@ def token_verified():
         data['message'] = _(u"Token not found")
 
     # Token expired
-    elif datetime.datetime.now() > auth_token.expiration:
+    elif datetime.now() > auth_token.expiration:
         ub.session.delete(auth_token)
         ub.session.commit()
 
@@ -1523,7 +1583,8 @@ def read_book(book_id, book_format):
 @web.route("/book/<int:book_id>")
 @login_required_if_no_ano
 def show_book(book_id):
-    entries = db.session.query(db.Books).filter(db.Books.id == book_id).filter(common_filters()).first()
+    entries = db.session.query(db.Books).filter(and_(db.Books.id == book_id,
+                                                     common_filters(allow_show_archived=True))).first()
     if entries:
         for index in range(0, len(entries.languages)):
             try:
@@ -1542,7 +1603,8 @@ def show_book(book_id):
             if not config.config_read_column:
                 matching_have_read_book = ub.session.query(ub.ReadBook). \
                     filter(and_(ub.ReadBook.user_id == int(current_user.id), ub.ReadBook.book_id == book_id)).all()
-                have_read = len(matching_have_read_book) > 0 and matching_have_read_book[0].is_read
+                have_read = len(
+                    matching_have_read_book) > 0 and matching_have_read_book[0].read_status == ub.ReadBook.STATUS_FINISHED
             else:
                 try:
                     matching_have_read_book = getattr(entries, 'custom_column_' + str(config.config_read_column))
@@ -1551,8 +1613,14 @@ def show_book(book_id):
                     log.error("Custom Column No.%d is not existing in calibre database", config.config_read_column)
                     have_read = None
 
+            archived_book = ub.session.query(ub.ArchivedBook).\
+                filter(and_(ub.ArchivedBook.user_id == int(current_user.id),
+                            ub.ArchivedBook.book_id == book_id)).first()
+            is_archived = archived_book and archived_book.is_archived
+
         else:
             have_read = None
+            is_archived = None
 
         entries.tags = sort(entries.tags, key=lambda tag: tag.name)
 
@@ -1567,9 +1635,8 @@ def show_book(book_id):
                 audioentries.append(media_format.format.lower())
 
         return render_title_template('detail.html', entry=entries, audioentries=audioentries, cc=cc,
-                                     is_xhr=request.headers.get('X-Requested-With') == 'XMLHttpRequest',
-                                     title=entries.title, books_shelfs=book_in_shelfs,
-                                     have_read=have_read, kindle_list=kindle_list, reader_list=reader_list, page="book")
+                                     is_xhr=request.headers.get('X-Requested-With')=='XMLHttpRequest', title=entries.title, books_shelfs=book_in_shelfs,
+                                     have_read=have_read, is_archived=is_archived, kindle_list=kindle_list, reader_list=reader_list, page="book")
     else:
         log.debug(u"Error opening eBook. File does not exist or file is not accessible:")
         flash(_(u"Error opening eBook. File does not exist or file is not accessible:"), category="error")
