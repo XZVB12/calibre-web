@@ -949,12 +949,15 @@ def HandleInitRequest():
                                                                        book_uuid="{ImageId}",
                                                                        width="{width}",
                                                                        height="{height}",
+                                                                       Quality='{Quality}',
+                                                                       isGreyscale='isGreyscale',
                                                                        _external=True))
         kobo_resources["image_url_template"] = unquote(url_for("kobo.HandleCoverImageRequest",
                                                                auth_token=kobo_auth.get_auth_token(),
                                                                book_uuid="{ImageId}",
                                                                width="{width}",
                                                                height="{height}",
+                                                               isGreyscale='false',
                                                                _external=True))
 
 
@@ -976,7 +979,7 @@ def NATIVE_KOBO_RESOURCES():
         "blackstone_header": {"key": "x-amz-request-payer", "value": "requester"},
         "book": "https://storeapi.kobo.com/v1/products/books/{ProductId}",
         "book_detail_page": "https://store.kobobooks.com/{culture}/ebook/{slug}",
-        "book_detail_page_rakuten": "http://books.rakuten.co.jp/rk/{crossrevisionid}",
+        "book_detail_page_rakuten": "https://books.rakuten.co.jp/rk/{crossrevisionid}",
         "book_landing_page": "https://store.kobobooks.com/ebooks",
         "book_subscription": "https://storeapi.kobo.com/v1/products/books/subscriptions",
         "categories": "https://storeapi.kobo.com/v1/categories",
@@ -1014,7 +1017,7 @@ def NATIVE_KOBO_RESOURCES():
         "get_tests_request": "https://storeapi.kobo.com/v1/analytics/gettests",
         "giftcard_epd_redeem_url": "https://www.kobo.com/{storefront}/{language}/redeem-ereader",
         "giftcard_redeem_url": "https://www.kobo.com/{storefront}/{language}/redeem",
-        "help_page": "http://www.kobo.com/help",
+        "help_page": "https://www.kobo.com/help",
         "kobo_audiobooks_enabled": "False",
         "kobo_audiobooks_orange_deal_enabled": "False",
         "kobo_audiobooks_subscriptions_enabled": "False",

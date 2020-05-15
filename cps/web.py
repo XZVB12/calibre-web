@@ -316,7 +316,7 @@ def import_ldap_users():
             match = re.search("([a-zA-Z0-9-]+)=%s", config.config_ldap_user_object, re.IGNORECASE | re.UNICODE)
             if match:
                 match_filter = match.group(1)
-                match = re.search(match_filter + "=([[\d\w-]+)", user, re.IGNORECASE | re.UNICODE)
+                match = re.search(match_filter + "=([\d\s\w-]+)", user, re.IGNORECASE | re.UNICODE)
                 if match:
                     user = match.group(1)
                 else:
@@ -801,7 +801,7 @@ def publisher_list():
     if current_user.check_visibility(constants.SIDEBAR_PUBLISHER):
         entries = db.session.query(db.Publishers, func.count('books_publishers_link.book').label('count')) \
             .join(db.books_publishers_link).join(db.Books).filter(common_filters()) \
-            .group_by(text('books_publishers_link.publisher')).order_by(db.Publishers.sort).all()
+            .group_by(text('books_publishers_link.publisher')).order_by(db.Publishers.name).all()
         charlist = db.session.query(func.upper(func.substr(db.Publishers.name, 1, 1)).label('char')) \
             .join(db.books_publishers_link).join(db.Books).filter(common_filters()) \
             .group_by(func.upper(func.substr(db.Publishers.name, 1, 1))).all()
@@ -1467,7 +1467,7 @@ def profile():
             current_user.kindle_mail = to_save["kindle_mail"]
         if "allowed_tags" in to_save and to_save["allowed_tags"] != current_user.allowed_tags:
             current_user.allowed_tags = to_save["allowed_tags"].strip()
-        if to_save["email"] and to_save["email"] != current_user.email:
+        if "email" in to_save and to_save["email"] != current_user.email:
             if config.config_public_reg and not check_valid_domain(to_save["email"]):
                 flash(_(u"E-mail is not from valid domain"), category="error")
                 return render_title_template("user_edit.html", content=current_user, downloads=downloads,
