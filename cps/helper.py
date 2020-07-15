@@ -295,15 +295,16 @@ def delete_book_file(book, calibrepath, book_format=None):
             return True, None
         else:
             if os.path.isdir(path):
-                if len(next(os.walk(path))[1]):
-                    log.error("Deleting book %s failed, path has subfolders: %s", book.id, book.path)
-                    return False , _("Deleting book %(id)s failed, path has subfolders: %(path)s",
-                                     id=book.id,
-                                     path=book.path)
                 try:
-                    for root, __, files in os.walk(path):
+                    for root, folders, files in os.walk(path):
                         for f in files:
                             os.unlink(os.path.join(root, f))
+                        if len(folders):
+                            log.warning("Deleting book {} failed, path {} has subfolders: {}".format(book.id,
+                                        book.path, folders))
+                            return True, _("Deleting bookfolder for book %(id)s failed, path has subfolders: %(path)s",
+                                            id=book.id,
+                                            path=book.path)
                     shutil.rmtree(path)
                 except (IOError, OSError) as e:
                     log.error("Deleting book %s failed: %s", book.id, e)
@@ -466,7 +467,10 @@ def reset_password(user_id):
 def generate_random_password():
     s = "abcdefghijklmnopqrstuvwxyz01234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%&*()?"
     passlen = 8
-    return "".join(s[c % len(s)] for c in os.urandom(passlen))
+    if sys.version_info < (3, 0):
+        return "".join(s[ord(c) % len(s)] for c in os.urandom(passlen))
+    else:
+        return "".join(s[c % len(s)] for c in os.urandom(passlen))
 
 
 def uniq(input):
