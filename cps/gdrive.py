@@ -43,7 +43,7 @@ log = logger.create()
 try:
     from googleapiclient.errors import HttpError
 except ImportError as err:
-    log.debug(("Cannot import googleapiclient, using gdrive will not work: %s", err))
+    log.debug("Cannot import googleapiclient, using GDrive will not work: %s", err)
 
 current_milli_time = lambda: int(round(time() * 1000))
 
@@ -93,8 +93,7 @@ def watch_gdrive():
         try:
             result = gdriveutils.watchChange(gdriveutils.Gdrive.Instance().drive, notification_id,
                                'web_hook', address, gdrive_watch_callback_token, current_milli_time() + 604800*1000)
-            # config.config_google_drive_watch_changes_response = json.dumps(result)
-            # after save(), config_google_drive_watch_changes_response will be a json object, not string
+            config.config_google_drive_watch_changes_response = result
             config.save()
         except HttpError as e:
             reason=json.loads(e.content)['error']['errors'][0]
@@ -154,7 +153,7 @@ def on_received_watch_confirmation():
                         log.info('Setting up new DB')
                         # prevent error on windows, as os.rename does on exisiting files
                         move(os.path.join(tmpDir, "tmp_metadata.db"), dbpath)
-                        calibre_db.setup_db(config, ub.app_DB_path)
+                        calibre_db.reconnect_db(config, ub.app_DB_path)
             except Exception as e:
                 log.exception(e)
         updateMetaData()

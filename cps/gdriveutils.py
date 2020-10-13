@@ -213,7 +213,7 @@ def listRootFolders():
 
 
 def getEbooksFolder(drive):
-    return getFolderInFolder('root',config.config_google_drive_folder,drive)
+    return getFolderInFolder('root', config.config_google_drive_folder, drive)
 
 
 def getFolderInFolder(parentId, folderName, drive):
@@ -243,7 +243,7 @@ def getEbooksFolderId(drive=None):
         gDriveId.path = '/'
         session.merge(gDriveId)
         session.commit()
-        return
+        return gDriveId.gdrive_id
 
 
 def getFile(pathId, fileName, drive):
@@ -602,8 +602,12 @@ def get_error_text(client_secrets=None):
     if not os.path.isfile(CLIENT_SECRETS):
         return 'client_secrets.json is missing or not readable'
 
-    with open(CLIENT_SECRETS, 'r') as settings:
-        filedata = json.load(settings)
+    try:
+        with open(CLIENT_SECRETS, 'r') as settings:
+            filedata = json.load(settings)
+    except PermissionError:
+        return 'client_secrets.json is missing or not readable'
+
     if 'web' not in filedata:
         return 'client_secrets.json is not configured for web application'
     if 'redirect_uris' not in filedata['web']:

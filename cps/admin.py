@@ -99,7 +99,7 @@ def shutdown():
 
     if task == 2:
         log.warning("reconnecting to calibre database")
-        calibre_db.setup_db(config, ub.app_DB_path)
+        calibre_db.reconnect_db(config, ub.app_DB_path)
         showtext['text'] = _(u'Reconnect successful')
         return json.dumps(showtext)
 
@@ -132,6 +132,7 @@ def admin():
     allUser = ub.session.query(ub.User).all()
     email_settings = config.get_mail_settings()
     return render_title_template("admin.html", allUser=allUser, email=email_settings, config=config, commit=commit,
+                                 feature_support=feature_support,
                                  title=_(u"Admin page"), page="admin")
 
 
@@ -603,7 +604,7 @@ def _configuration_ldap_helper(to_save, gdriveError):
         return reboot_required, _configuration_result(_('LDAP User Object Filter Has Unmatched Parenthesis'),
                                      gdriveError)
 
-    if config.config_ldap_cert_path and not os.path.isdir(config.config_ldap_cert_path):
+    if config.config_ldap_cert_path and not os.path.isfile(config.config_ldap_cert_path):
         return reboot_required, _configuration_result(_('LDAP Certificate Location is not Valid, Please Enter Correct Path'),
                                      gdriveError)
     return reboot_required, None
@@ -637,10 +638,14 @@ def _configuration_update_helper():
         _config_checkbox_int(to_save, "config_public_reg")
         _config_checkbox_int(to_save, "config_register_email")
         reboot_required |= _config_checkbox_int(to_save, "config_kobo_sync")
+        _config_int(to_save, "config_external_port")
         _config_checkbox_int(to_save, "config_kobo_proxy")
 
-        _config_string(to_save, "config_upload_formats")
-        constants.EXTENSIONS_UPLOAD = [x.lstrip().rstrip() for x in config.config_upload_formats.split(',')]
+        if "config_upload_formats" in to_save:
+            to_save["config_upload_formats"] = ','.join(
+                helper.uniq([x.lstrip().rstrip().lower() for x in to_save["config_upload_formats"].split(',')]))
+            _config_string(to_save, "config_upload_formats")
+            constants.EXTENSIONS_UPLOAD = config.config_upload_formats.split(',')
 
         _config_string(to_save, "config_calibre")
         _config_string(to_save, "config_converterpath")
@@ -794,7 +799,7 @@ def _handle_new_user(to_save, content,languages, translations, kobo_support):
         flash(_(u"Settings DB is not Writeable"), category="error")
 
 
-def _handle_edit_user(to_save, content,languages, translations, kobo_support, downloads):
+def _handle_edit_user(to_save, content,languages, translations, kobo_support):
     if "delete" in to_save:
         if ub.session.query(ub.User).filter(ub.User.role.op('&')(constants.ROLE_ADMIN) == constants.ROLE_ADMIN,
                                             ub.User.id != content.id).count():
@@ -853,7 +858,6 @@ def _handle_edit_user(to_save, content,languages, translations, kobo_support, do
                                              kobo_support=kobo_support,
                                              new_user=0,
                                              content=content,
-                                             downloads=downloads,
                                              registered_oauth=oauth_check,
                                              title=_(u"Edit User %(nick)s", nick=content.nickname), page="edituser")
         if "nickname" in to_save and to_save["nickname"] != content.nickname:
@@ -867,7 +871,6 @@ def _handle_edit_user(to_save, content,languages, translations, kobo_support, do
                                              languages=languages,
                                              mail_configured=config.get_mail_server_configured(),
                                              new_user=0, content=content,
-                                             downloads=downloads,
                                              registered_oauth=oauth_check,
                                              kobo_support=kobo_support,
                                              title=_(u"Edit User %(nick)s", nick=content.nickname),
@@ -956,28 +959,20 @@ def update_mailsettings():
 @admin_required
 def edit_user(user_id):
     content = ub.session.query(ub.User).filter(ub.User.id == int(user_id)).first()  # type: ub.User
-    if not content:
+    if not content or (not config.config_anonbrowse and content.nickname == "Guest"):
         flash(_(u"User not found"), category="error")
         return redirect(url_for('admin.admin'))
-    downloads = list()
     languages = calibre_db.speaking_language()
     translations = babel.list_translations() + [LC('en')]
     kobo_support = feature_support['kobo'] and config.config_kobo_sync
-    for book in content.downloads:
-        downloadbook = calibre_db.get_book(book.book_id)
-        if downloadbook:
-            downloads.append(downloadbook)
-        else:
-            ub.delete_download(book.book_id)
     if request.method == "POST":
         to_save = request.form.to_dict()
-        _handle_edit_user(to_save, content, languages, translations, kobo_support, downloads)
+        _handle_edit_user(to_save, content, languages, translations, kobo_support)
     return render_title_template("user_edit.html",
                                  translations=translations,
                                  languages=languages,
                                  new_user=0,
                                  content=content,
-                                 downloads=downloads,
                                  registered_oauth=oauth_check,
                                  mail_configured=config.get_mail_server_configured(),
                                  kobo_support=kobo_support,

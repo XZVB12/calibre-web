@@ -29,8 +29,8 @@ from flask_login import login_required, current_user
 from sqlalchemy.sql.expression import func
 from sqlalchemy.exc import OperationalError, InvalidRequestError
 
-from . import logger, ub, searched_ids, calibre_db
-from .web import render_title_template
+from . import logger, ub, calibre_db
+from .web import login_required_if_no_ano, render_title_template
 
 
 shelf = Blueprint('shelf', __name__)
@@ -124,18 +124,18 @@ def search_to_shelf(shelf_id):
         flash(_(u"You are not allowed to add a book to the the shelf: %(name)s", name=shelf.name), category="error")
         return redirect(url_for('web.index'))
 
-    if current_user.id in searched_ids and searched_ids[current_user.id]:
+    if current_user.id in ub.searched_ids and ub.searched_ids[current_user.id]:
         books_for_shelf = list()
         books_in_shelf = ub.session.query(ub.BookShelf).filter(ub.BookShelf.shelf == shelf_id).all()
         if books_in_shelf:
             book_ids = list()
             for book_id in books_in_shelf:
                 book_ids.append(book_id.book_id)
-            for searchid in searched_ids[current_user.id]:
+            for searchid in ub.searched_ids[current_user.id]:
                 if searchid not in book_ids:
                     books_for_shelf.append(searchid)
         else:
-            books_for_shelf = searched_ids[current_user.id]
+            books_for_shelf = ub.searched_ids[current_user.id]
 
         if not books_for_shelf:
             log.error("Books are already part of %s", shelf)
@@ -341,7 +341,7 @@ def delete_shelf(shelf_id):
 
 @shelf.route("/shelf/<int:shelf_id>", defaults={'shelf_type': 1})
 @shelf.route("/shelf/<int:shelf_id>/<int:shelf_type>")
-@login_required
+@login_required_if_no_ano
 def show_shelf(shelf_type, shelf_id):
     shelf = ub.session.query(ub.Shelf).filter(ub.Shelf.id == shelf_id).first()
 
