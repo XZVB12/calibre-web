@@ -41,7 +41,7 @@ from flask_login import login_user, logout_user, login_required, current_user, c
 from sqlalchemy.exc import IntegrityError, InvalidRequestError, OperationalError
 from sqlalchemy.sql.expression import text, func, true, false, not_, and_, or_
 from sqlalchemy.orm.attributes import flag_modified
-from werkzeug.exceptions import default_exceptions, InternalServerError
+from werkzeug.exceptions import default_exceptions
 from sqlalchemy.sql.functions import coalesce
 
 from .services.worker import WorkerThread
@@ -307,12 +307,14 @@ def before_request():
 
 
 @app.route('/import_ldap_users')
+@login_required
+@admin_required
 def import_ldap_users():
     showtext = {}
     try:
         new_users = services.ldap.get_group_members(config.config_ldap_group_name)
     except (services.ldap.LDAPException, TypeError, AttributeError, KeyError) as e:
-        log.debug(e)
+        log.exception(e)
         showtext['text'] = _(u'Error: %(ldaperror)s', ldaperror=e)
         return json.dumps(showtext)
     if not new_users:
@@ -1231,7 +1233,9 @@ def reconnect():
 def search():
     term = request.args.get("query")
     if term:
-        return render_search_results(term, 0, None, config.config_books_per_page)
+        # flask_session['query'] = json.dumps(request.form)
+        return redirect(url_for('web.books_list', data="search", sort_param='stored', query=term))
+        # return render_search_results(term, 0, None, config.config_books_per_page)
     else:
         return render_title_template('search.html',
                                      searchterm="",
@@ -1240,11 +1244,17 @@ def search():
                                      page="search")
 
 
-@web.route("/advanced_search", methods=['POST'])
+@web.route("/advsearch", methods=['POST'])
 @login_required_if_no_ano
 def advanced_search():
-    term = request.form
-    return render_adv_search_results(term, 0, None, config.config_books_per_page)
+    values = dict(request.form)
+    params = ['include_tag', 'exclude_tag', 'include_serie', 'exclude_serie', 'include_language',
+              'exclude_language', 'include_extension', 'exclude_extension']
+    for param in params:
+        values[param] = list(request.form.getlist(param))
+    flask_session['query'] = json.dumps(values)
+    return redirect(url_for('web.books_list', data="advsearch", sort_param='stored', query=""))
+
 
 def render_adv_search_results(term, offset=None, order=None, limit=None):
     order = order or [db.Books.sort]
@@ -1254,14 +1264,14 @@ def render_adv_search_results(term, offset=None, order=None, limit=None):
     calibre_db.session.connection().connection.connection.create_function("lower", 1, db.lcase)
     q = calibre_db.session.query(db.Books).filter(calibre_db.common_filters(True))
 
-    include_tag_inputs = request.form.getlist('include_tag')
-    exclude_tag_inputs = request.form.getlist('exclude_tag')
-    include_series_inputs = request.form.getlist('include_serie')
-    exclude_series_inputs = request.form.getlist('exclude_serie')
-    include_languages_inputs = request.form.getlist('include_language')
-    exclude_languages_inputs = request.form.getlist('exclude_language')
-    include_extension_inputs = request.form.getlist('include_extension')
-    exclude_extension_inputs = request.form.getlist('exclude_extension')
+    include_tag_inputs = term.get('include_tag')
+    exclude_tag_inputs = term.get('exclude_tag')
+    include_series_inputs = term.get('include_serie')
+    exclude_series_inputs = term.get('exclude_serie')
+    include_languages_inputs = term.get('include_language')
+    exclude_languages_inputs = term.get('exclude_language')
+    include_extension_inputs = term.get('include_extension')
+    exclude_extension_inputs = term.get('exclude_extension')
 
     author_name = term.get("author_name")
     book_title = term.get("book_title")
@@ -1281,15 +1291,14 @@ def render_adv_search_results(term, offset=None, order=None, limit=None):
     searchterm = []
     cc_present = False
     for c in cc:
-        if request.form.get('custom_column_' + str(c.id)):
-            searchterm.extend([(u"%s: %s" % (c.name, request.form.get('custom_column_' + str(c.id))))])
+        if term.get('custom_column_' + str(c.id)):
+            searchterm.extend([(u"%s: %s" % (c.name, term.get('custom_column_' + str(c.id))))])
             cc_present = True
 
     if include_tag_inputs or exclude_tag_inputs or include_series_inputs or exclude_series_inputs or \
-        include_languages_inputs or exclude_languages_inputs or author_name or book_title or \
-        publisher or pub_start or pub_end or rating_low or rating_high or description or cc_present or \
-        include_extension_inputs or exclude_extension_inputs:
-        searchterm = []
+            include_languages_inputs or exclude_languages_inputs or author_name or book_title or \
+            publisher or pub_start or pub_end or rating_low or rating_high or description or cc_present or \
+            include_extension_inputs or exclude_extension_inputs:
         searchterm.extend((author_name.replace('|', ','), book_title, publisher))
         if pub_start:
             try:
@@ -1309,7 +1318,8 @@ def render_adv_search_results(term, offset=None, order=None, limit=None):
         searchterm.extend(tag.name for tag in tag_names)
         serie_names = calibre_db.session.query(db.Series).filter(db.Series.id.in_(include_series_inputs)).all()
         searchterm.extend(serie.name for serie in serie_names)
-        language_names = calibre_db.session.query(db.Languages).filter(db.Languages.id.in_(include_languages_inputs)).all()
+        language_names = calibre_db.session.query(db.Languages).\
+            filter(db.Languages.id.in_(include_languages_inputs)).all()
         if language_names:
             language_names = calibre_db.speaking_language(language_names)
         searchterm.extend(language.name for language in language_names)
@@ -1320,9 +1330,9 @@ def render_adv_search_results(term, offset=None, order=None, limit=None):
         searchterm.extend(ext for ext in include_extension_inputs)
         searchterm.extend(ext for ext in exclude_extension_inputs)
         # handle custom columns
-        for c in cc:
-            if request.form.get('custom_column_' + str(c.id)):
-                searchterm.extend([(u"%s: %s" % (c.name, request.form.get('custom_column_' + str(c.id))))])
+        #for c in cc:
+        #    if term.get('custom_column_' + str(c.id)):
+        #        searchterm.extend([(u"%s: %s" % (c.name, term.get('custom_column_' + str(c.id))))])
         searchterm = " + ".join(filter(None, searchterm))
         q = q.filter()
         if author_name:
@@ -1365,7 +1375,7 @@ def render_adv_search_results(term, offset=None, order=None, limit=None):
 
         # search custom culumns
         for c in cc:
-            custom_query = request.form.get('custom_column_' + str(c.id))
+            custom_query = term.get('custom_column_' + str(c.id))
             if custom_query != '' and custom_query is not None:
                 if c.datatype == 'bool':
                     q = q.filter(getattr(db.Books, 'custom_column_' + str(c.id)).any(
@@ -1379,18 +1389,18 @@ def render_adv_search_results(term, offset=None, order=None, limit=None):
                 else:
                     q = q.filter(getattr(db.Books, 'custom_column_' + str(c.id)).any(
                         func.lower(db.cc_classes[c.id].value).ilike("%" + custom_query + "%")))
-        q = q.order_by(*order).all()
-        flask_session['query'] = json.dumps(term)
-        ub.store_ids(q)
-        # entries, result_count, pagination = calibre_db.get_search_results(term, offset, order, limit)
-        result_count = len(q)
-        if offset != None and limit != None:
-            offset = int(offset)
-            limit_all = offset + int(limit)
-            pagination = Pagination((offset / (int(limit)) + 1), limit, result_count)
-        else:
-            offset = 0
-            limit_all = result_count
+    q = q.order_by(*order).all()
+    flask_session['query'] = json.dumps(term)
+    ub.store_ids(q)
+    # entries, result_count, pagination = calibre_db.get_search_results(term, offset, order, limit)
+    result_count = len(q)
+    if offset != None and limit != None:
+        offset = int(offset)
+        limit_all = offset + int(limit)
+        pagination = Pagination((offset / (int(limit)) + 1), limit, result_count)
+    else:
+        offset = 0
+        limit_all = result_count
     return render_title_template('search.html',
                                  adv_searchterm=searchterm,
                                  pagination=pagination,
@@ -1400,7 +1410,7 @@ def render_adv_search_results(term, offset=None, order=None, limit=None):
 
 
 
-@web.route("/advanced_search", methods=['GET'])
+@web.route("/advsearch", methods=['GET'])
 @login_required_if_no_ano
 def advanced_search_form():
     # Build custom columns names

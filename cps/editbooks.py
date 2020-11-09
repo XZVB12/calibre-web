@@ -27,7 +27,6 @@ import json
 from shutil import copyfile
 from uuid import uuid4
 
-from babel import Locale as LC
 from flask import Blueprint, request, flash, redirect, url_for, abort, Markup, Response
 from flask_babel import gettext as _
 from flask_login import current_user, login_required
@@ -406,7 +405,7 @@ def edit_book_languages(languages, book, upload=False):
         # the book it's language is set to the filter language
         if input_l[0] != current_user.filter_language() and current_user.filter_language() != "all":
             input_l[0] = calibre_db.session.query(db.Languages). \
-                filter(db.Languages.lang_code == current_user.filter_language()).first()
+                filter(db.Languages.lang_code == current_user.filter_language()).first().lang_code
     # Remove duplicates
     input_l = helper.uniq(input_l)
     return modify_database_object(input_l, book.languages, db.Languages, calibre_db.session, 'languages')
@@ -930,6 +929,7 @@ def convert_bookformat(book_id):
 
 @editbook.route("/ajax/editbooks/<param>", methods=['POST'])
 @login_required_if_no_ano
+@edit_required
 def edit_list_book(param):
     vals = request.form.to_dict()
     # calibre_db.update_title_sort(config)
@@ -989,6 +989,7 @@ def get_sorted_entry(field, bookid):
 
 @editbook.route("/ajax/simulatemerge", methods=['POST'])
 @login_required
+@edit_required
 def simulate_merge_list_book():
     vals = request.get_json().get('Merge_books')
     if vals:
@@ -1004,6 +1005,7 @@ def simulate_merge_list_book():
 
 @editbook.route("/ajax/mergebooks", methods=['POST'])
 @login_required
+@edit_required
 def merge_list_book():
     vals = request.get_json().get('Merge_books')
     to_file = list()
