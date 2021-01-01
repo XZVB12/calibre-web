@@ -38,7 +38,7 @@ try:
     use_comic_meta = True
     try:
         from comicapi import __version__ as comic_version
-    except (ImportError):
+    except ImportError:
         comic_version = ''
 except (ImportError, LookupError) as e:
     log.debug('Cannot import comicapi, extracting comic metadata will not work: %s', e)
@@ -47,7 +47,7 @@ except (ImportError, LookupError) as e:
     try:
         import rarfile
         use_rarfile = True
-    except ImportError as e:
+    except (ImportError, SyntaxError) as e:
         log.debug('Cannot import rarfile, extracting cover files from rar files will not work: %s', e)
         use_rarfile = False
     use_comic_meta = False
@@ -62,14 +62,12 @@ def _cover_processing(tmp_file_name, img, extension):
             im.save(tmp_bytesio, format='JPEG')
             img = tmp_bytesio.getvalue()
 
-    prefix = os.path.dirname(tmp_file_name)
-    if img:
-        tmp_cover_name = prefix + '/cover.jpg'
-        image = open(tmp_cover_name, 'wb')
-        image.write(img)
-        image.close()
-    else:
-        tmp_cover_name = None
+    if not img:
+        return None
+
+    tmp_cover_name = os.path.join(os.path.dirname(tmp_file_name), 'cover.jpg')
+    with open(tmp_cover_name, 'wb') as f:
+        f.write(img)
     return tmp_cover_name
 
 

@@ -293,6 +293,7 @@ def edit_required(f):
 def before_request():
     if current_user.is_authenticated:
         confirm_login()
+    g.constants = constants
     g.user = current_user
     g.allow_registration = config.config_public_reg
     g.allow_anonymous = config.config_anonbrowse
@@ -322,39 +323,56 @@ def import_ldap_users():
         showtext['text'] = _(u'Error: No user returned in response of LDAP server')
         return json.dumps(showtext)
 
+    imported = 0
     for username in new_users:
         user = username.decode('utf-8')
         if '=' in user:
-            match = re.search("([a-zA-Z0-9-]+)=%s", config.config_ldap_user_object, re.IGNORECASE | re.UNICODE)
-            if match:
-                match_filter = match.group(1)
-                match = re.search(match_filter + "=([\d\s\w-]+)", user, re.IGNORECASE | re.UNICODE)
-                if match:
-                    user = match.group(1)
-                else:
-                    log.warning("Could Not Parse LDAP User: %s", user)
-                    continue
+            # if member object field is empty take user object as filter
+            if config.config_ldap_member_user_object:
+                query_filter = config.config_ldap_member_user_object
             else:
-                log.warning("Could Not Parse LDAP User: %s", user)
+                query_filter = config.config_ldap_user_object
+            try:
+                user_identifier = extract_user_identifier(user, query_filter)
+            except Exception as e:
+                log.warning(e)
                 continue
-        if ub.session.query(ub.User).filter(ub.User.nickname == user.lower()).first():
-            log.warning("LDAP User: %s Already in Database", user)
+        else:
+            user_identifier = user
+            query_filter = None
+        try:
+            user_data = services.ldap.get_object_details(user=user_identifier, query_filter=query_filter)
+        except AttributeError as e:
+            log.exception(e)
             continue
-        user_data = services.ldap.get_object_details(user=user,
-                                                     group=None,
-                                                     query_filter=None,
-                                                     dn_only=False)
         if user_data:
-            content = ub.User()
-            content.nickname = user
-            content.password = ''  # dummy password which will be replaced by ldap one
+            user_login_field = extract_dynamic_field_from_filter(user, config.config_ldap_user_object)
+
+            username = user_data[user_login_field][0].decode('utf-8')
+            # check for duplicate username
+            if ub.session.query(ub.User).filter(func.lower(ub.User.nickname) == username.lower()).first():
+                # if ub.session.query(ub.User).filter(ub.User.nickname == username).first():
+                log.warning("LDAP User  %s Already in Database", user_data)
+                continue
+
+            kindlemail = ''
             if 'mail' in user_data:
-                content.email = user_data['mail'][0].decode('utf-8')
+                useremail = user_data['mail'][0].decode('utf-8')
                 if (len(user_data['mail']) > 1):
-                    content.kindle_mail = user_data['mail'][1].decode('utf-8')
+                    kindlemail = user_data['mail'][1].decode('utf-8')
+
             else:
                 log.debug('No Mail Field Found in LDAP Response')
-                content.email = user + '@email.com'
+                useremail = username + '@email.com'
+            # check for duplicate email
+            if ub.session.query(ub.User).filter(func.lower(ub.User.email) == useremail.lower()).first():
+                log.warning("LDAP Email %s Already in Database", user_data)
+                continue
+            content = ub.User()
+            content.nickname = username
+            content.password = ''  # dummy password which will be replaced by ldap one
+            content.email = useremail
+            content.kindle_mail = kindlemail
             content.role = config.config_default_role
             content.sidebar_view = config.config_default_show
             content.allowed_tags = config.config_allowed_tags
@@ -364,6 +382,7 @@ def import_ldap_users():
             ub.session.add(content)
             try:
                 ub.session.commit()
+                imported +=1
             except Exception as e:
                 log.warning("Failed to create LDAP user: %s - %s", user, e)
                 ub.session.rollback()
@@ -372,8 +391,27 @@ def import_ldap_users():
             log.warning("LDAP User: %s Not Found", user)
             showtext['text'] = _(u'At Least One LDAP User Not Found in Database')
     if not showtext:
-        showtext['text'] = _(u'User Successfully Imported')
+        showtext['text'] = _(u'{} User Successfully Imported'.format(imported))
     return json.dumps(showtext)
+
+
+def extract_user_data_from_field(user, field):
+    match = re.search(field + "=([\d\s\w-]+)", user, re.IGNORECASE | re.UNICODE)
+    if match:
+        return match.group(1)
+    else:
+        raise Exception("Could Not Parse LDAP User: {}".format(user))
+
+def extract_dynamic_field_from_filter(user, filter):
+    match = re.search("([a-zA-Z0-9-]+)=%s", filter, re.IGNORECASE | re.UNICODE)
+    if match:
+        return match.group(1)
+    else:
+        raise Exception("Could Not Parse LDAP Userfield: {}", user)
+
+def extract_user_identifier(user, filter):
+    dynamic_field = extract_dynamic_field_from_filter(user, filter)
+    return extract_user_data_from_field(user, dynamic_field)
 
 
 # ################################### data provider functions #########################################################
@@ -630,6 +668,10 @@ def render_books_list(data, sort, book_id, page):
         order = [db.Books.author_sort.asc()]
     if sort == 'authza':
         order = [db.Books.author_sort.desc()]
+    if sort == 'seriesasc':
+        order = [db.Books.series_index.asc()]
+    if sort == 'seriesdesc':
+        order = [db.Books.series_index.desc()]
 
     if data == "rated":
         if current_user.check_visibility(constants.SIDEBAR_BEST_RATED):
@@ -812,7 +854,7 @@ def render_ratings_books(page, book_id, order):
     entries, random, pagination = calibre_db.fill_indexpage(page, 0,
                                                             db.Books,
                                                             db.Books.ratings.any(db.Ratings.id == book_id),
-                                                            [db.Books.timestamp.desc(), order[0]])
+                                                            [order[0]])
     if name and name.rating <= 10:
         return render_title_template('index.html', random=random, pagination=pagination, entries=entries, id=book_id,
                                      title=_(u"Rating: %(rating)s stars", rating=int(name.rating / 2)), page="ratings")
@@ -826,7 +868,7 @@ def render_formats_books(page, book_id, order):
         entries, random, pagination = calibre_db.fill_indexpage(page, 0,
                                                                 db.Books,
                                                                 db.Books.data.any(db.Data.format == book_id.upper()),
-                                                                [db.Books.timestamp.desc(), order[0]])
+                                                                [order[0]])
         return render_title_template('index.html', random=random, pagination=pagination, entries=entries, id=book_id,
                                      title=_(u"File format: %(format)s", format=name.format), page="formats")
     else:
@@ -859,7 +901,7 @@ def render_language_books(page, name, order):
     entries, random, pagination = calibre_db.fill_indexpage(page, 0,
                                                             db.Books,
                                                             db.Books.languages.any(db.Languages.lang_code == name),
-                                                            [db.Books.timestamp.desc(), order[0]])
+                                                            [order[0]])
     return render_title_template('index.html', random=random, entries=entries, pagination=pagination, id=name,
                                  title=_(u"Language: %(name)s", name=lang_name), page="language")
 
@@ -997,7 +1039,7 @@ def books_list(data, sort_param, book_id, page):
 @login_required
 def books_table():
     visibility = current_user.view_settings.get('table', {})
-    return render_title_template('book_table.html', title=_(u"Books list"), page="book_table",
+    return render_title_template('book_table.html', title=_(u"Books List"), page="book_table",
                                  visiblility=visibility)
 
 @web.route("/ajax/listbooks")
@@ -1437,7 +1479,9 @@ def get_robots():
 def serve_book(book_id, book_format, anyname):
     book_format = book_format.split(".")[0]
     book = calibre_db.get_book(book_id)
-    data = calibre_db.get_book_format(book.id, book_format.upper())
+    data = calibre_db.get_book_format(book_id, book_format.upper())
+    if not data:
+        abort(404)
     log.info('Serving book: %s', data.name)
     if config.config_use_google_drive:
         headers = Headers()
@@ -1446,6 +1490,7 @@ def serve_book(book_id, book_format, anyname):
         return do_gdrive_download(df, headers)
     else:
         return send_from_directory(os.path.join(config.config_calibre_dir, book.path), data.name + "." + book_format)
+
 
 
 @web.route("/download/<int:book_id>/<book_format>", defaults={'anyname': 'None'})
@@ -1921,9 +1966,18 @@ def show_book(book_id):
             if media_format.format.lower() in constants.EXTENSIONS_AUDIO:
                 audioentries.append(media_format.format.lower())
 
-        return render_title_template('detail.html', entry=entries, audioentries=audioentries, cc=cc,
-                                     is_xhr=request.headers.get('X-Requested-With')=='XMLHttpRequest', title=entries.title, books_shelfs=book_in_shelfs,
-                                     have_read=have_read, is_archived=is_archived, kindle_list=kindle_list, reader_list=reader_list, page="book")
+        return render_title_template('detail.html',
+                                     entry=entries,
+                                     audioentries=audioentries,
+                                     cc=cc,
+                                     is_xhr=request.headers.get('X-Requested-With')=='XMLHttpRequest',
+                                     title=entries.title,
+                                     books_shelfs=book_in_shelfs,
+                                     have_read=have_read,
+                                     is_archived=is_archived,
+                                     kindle_list=kindle_list,
+                                     reader_list=reader_list,
+                                     page="book")
     else:
         log.debug(u"Error opening eBook. File does not exist or file is not accessible")
         flash(_(u"Error opening eBook. File does not exist or file is not accessible"), category="error")

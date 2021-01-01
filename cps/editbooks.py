@@ -307,7 +307,7 @@ def render_edit_book(book_id):
     kepub_possible=None
     if config.config_converterpath:
         for file in book.data:
-            if file.format.lower() in constants.EXTENSIONS_CONVERT:
+            if file.format.lower() in constants.EXTENSIONS_CONVERT_FROM:
                 valid_source_formats.append(file.format.lower())
     if config.config_kepubifypath and 'epub' in [file.format.lower() for file in book.data]:
         kepub_possible = True
@@ -316,7 +316,7 @@ def render_edit_book(book_id):
 
     # Determine what formats don't already exist
     if config.config_converterpath:
-        allowed_conversion_formats = constants.EXTENSIONS_CONVERT[:]
+        allowed_conversion_formats = constants.EXTENSIONS_CONVERT_TO[:]
         for file in book.data:
             if file.format.lower() in allowed_conversion_formats:
                 allowed_conversion_formats.remove(file.format.lower())
@@ -588,7 +588,7 @@ def edit_book(book_id):
 
     # create the function for sorting...
     calibre_db.update_title_sort(config)
-    book = calibre_db.get_filtered_book(book_id)
+    book = calibre_db.get_filtered_book(book_id, allow_show_archived=True)
 
     # Book not found
     if not book:
@@ -652,12 +652,15 @@ def edit_book(book_id):
                 if to_save["cover_url"]:
                     if not current_user.role_upload():
                         return "", (403)
-                    result, error = helper.save_cover_from_url(to_save["cover_url"], book.path)
-                    if result is True:
-                        book.has_cover = 1
-                        modif_date = True
+                    if to_save["cover_url"].endswith('/static/generic_cover.jpg'):
+                        book.has_cover = 0
                     else:
-                        flash(error, category="error")
+                        result, error = helper.save_cover_from_url(to_save["cover_url"], book.path)
+                        if result is True:
+                            book.has_cover = 1
+                            modif_date = True
+                        else:
+                            flash(error, category="error")
 
             # Add default series_index to book
             modif_date |= edit_book_series_index(to_save["series_index"], book)
@@ -932,8 +935,6 @@ def convert_bookformat(book_id):
 @edit_required
 def edit_list_book(param):
     vals = request.form.to_dict()
-    # calibre_db.update_title_sort(config)
-    #calibre_db.session.connection().connection.connection.create_function('uuid4', 0, lambda: str(uuid4()))
     book = calibre_db.get_book(vals['pk'])
     if param =='series_index':
         edit_book_series_index(vals['value'], book)
